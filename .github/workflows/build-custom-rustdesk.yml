@@ -42,12 +42,12 @@ jobs:
         shell: pwsh
         run: |
           $Server = "47.100.22.91"
-            # Rendezvous / Relay ports
+          # Rendezvous / Relay ports
           $RendezvousPort = 21116
           $RelayPort      = 21117
           $PubKey = "ejHEEuKd761NA6Q82WMsnNBaKxYhXhMFs1qdUzrJEPY="
 
-          Write-Host "Using rendezvous=$Server:$RendezvousPort relay=$Server:$RelayPort"
+          Write-Host "Using rendezvous=${Server}:${RendezvousPort} relay=${Server}:${RelayPort}"
 
           # 1. Patch hbb_common config constants (if file exists in submodule)
           $configFile = "libs/hbb_common/src/config.rs"
@@ -82,8 +82,8 @@ jobs:
           }
 
           # 3. Export env for potential runtime use
-          echo "RENDEZVOUS_SERVER=$Server:$RendezvousPort" | Out-File -File .env -Encoding utf8
-          echo "RELAY_SERVER=$Server:$RelayPort" | Out-File -File .env -Append -Encoding utf8
+          echo "RENDEZVOUS_SERVER=${Server}:${RendezvousPort}" | Out-File -File .env -Encoding utf8
+          echo "RELAY_SERVER=${Server}:${RelayPort}" | Out-File -File .env -Append -Encoding utf8
           echo "RS_PUB_KEY=$PubKey" | Out-File -File .env -Append -Encoding utf8
 
       - name: Build (portable, hwcodec)
