@@ -1,4 +1,4 @@
-name: Build Custom RustDesk Windows
+name: Build Custom RustDesk Windows (x64)
 
 on:
   push:
@@ -12,43 +12,95 @@ jobs:
   build-windows:
     runs-on: windows-2022
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
-        
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-      
-    - name: Configure custom server
-      shell: pwsh
-      run: |
-        # 修改配置文件
-        $configFile = "libs\hbb_common\src\config.rs"
-        $content = Get-Content $configFile -Raw
-        
-        # 替换服务器地址
-        $content = $content -replace 'rs-ny\.rustdesk\.com', '47.100.22.91'
-        $content = $content -replace 'rs-sg\.rustdesk\.com', '47.100.22.91'
-        
-        # 在 get_key 函数添加默认key
-        if ($content -match '(pub fn get_key\(\) -> String \{[^}]+\})') {
-            $oldFunc = $matches[1]
-            $newFunc = $oldFunc -replace '(Config::get_option\("key"\))', '$1;`n            if key.is_empty() {`n                key = "ejHEEuKd761NA6Q82WMsnNBaKxYhXhMFs1qdUzrJEPY=".to_string();`n            }'
-            $content = $content -replace [regex]::Escape($oldFunc), $newFunc
-        }
-        
-        Set-Content -Path $configFile -Value $content
-        
-    - name: Build RustDesk
-      run: python build.py --portable
-        
-    - name: Upload build
-      uses: actions/upload-artifact@v4
-      with:
-        name: RustDesk-Windows-Custom
-        path: |
-          rustdesk-*.exe
-          target/release/rustdesk-portable-packer.exe
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup Rust (stable x86_64)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-stable-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            windows-stable-
+
+      - name: Inject custom servers & key
+        shell: pwsh
+        run: |
+          $Server = "47.100.22.91"
+            # Rendezvous / Relay ports
+          $RendezvousPort = 21116
+          $RelayPort      = 21117
+          $PubKey = "ejHEEuKd761NA6Q82WMsnNBaKxYhXhMFs1qdUzrJEPY="
+
+          Write-Host "Using rendezvous=$Server:$RendezvousPort relay=$Server:$RelayPort"
+
+          # 1. Patch hbb_common config constants (if file exists in submodule)
+          $configFile = "libs/hbb_common/src/config.rs"
+          if (Test-Path $configFile) {
+            $cfg = Get-Content $configFile -Raw
+            $origHash = (Get-FileHash $configFile).Hash
+            $cfg = $cfg -replace 'rs-ny\.rustdesk\.com', $Server
+            $cfg = $cfg -replace 'rs-sg\.rustdesk\.com', $Server
+            # 若存在默认公钥常量，尝试替换 (保守做法: 只在常量行包含 RS_PUB_KEY 且未标记 CUSTOM 时插入)
+            if ($cfg -match 'RS_PUB_KEY' -and $cfg -notmatch 'CUSTOM_RUSTDESK_KEY') {
+              $cfg = $cfg -replace '(RS_PUB_KEY\s*:\s*&str\s*=\s*)"[^"]+"', "`$1\"$PubKey\" // CUSTOM_RUSTDESK_KEY"
+            }
+            if ($origHash -ne (Get-FileHash -Algorithm SHA256 -InputStream ([IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes($cfg)))).Hash) {
+              Set-Content $configFile $cfg -Encoding UTF8
+              Write-Host "Patched $configFile"
+            } else {
+              Write-Host "No changes applied to $configFile"
+            }
+          } else {
+            Write-Warning "Config file $configFile not found (maybe submodule missing?)"
+          }
+
+          # 2. Patch fallback in src/common.rs (replace the line setting key = config::RS_PUB_KEY)
+          $commonFile = "src/common.rs"
+          $common = Get-Content $commonFile -Raw
+          if ($common -match 'key = config::RS_PUB_KEY.to_owned();' -and $common -notmatch 'CUSTOM_RUSTDESK_KEY') {
+            $common = $common -replace 'key = config::RS_PUB_KEY.to_owned();', "// CUSTOM_RUSTDESK_KEY injected`n    key = \"$PubKey\".to_owned();"
+            Set-Content $commonFile $common -Encoding UTF8
+            Write-Host "Injected custom key fallback in common.rs"
+          } else {
+            Write-Host "common.rs already patched or pattern missing"
+          }
+
+          # 3. Export env for potential runtime use
+          echo "RENDEZVOUS_SERVER=$Server:$RendezvousPort" | Out-File -File .env -Encoding utf8
+          echo "RELAY_SERVER=$Server:$RelayPort" | Out-File -File .env -Append -Encoding utf8
+          echo "RS_PUB_KEY=$PubKey" | Out-File -File .env -Append -Encoding utf8
+
+      - name: Build (portable, hwcodec)
+        shell: pwsh
+        run: |
+          python build.py --portable --hwcodec
+
+      - name: List produced files (debug)
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse -Filter 'rustdesk*.exe' | Select-Object FullName,Length | Format-Table
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: RustDesk-Windows-Custom
+          path: |
+            rustdesk-*.exe
+            target/release/rustdesk.exe
+            target/release/rustdesk-portable-packer.exe
